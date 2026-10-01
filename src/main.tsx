@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { sim } from './simulator/controller';
 import { useSim } from './state/simStore';
 import { useApp } from './state/store';
@@ -11,6 +12,8 @@ if (import.meta.env.DEV) Object.assign(window, { __esp32sim: { useApp, useSim, s
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   </StrictMode>,
 );
