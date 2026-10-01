@@ -68,8 +68,8 @@ export function TopBar({ onOpen, onHelp, onToast, theme, onTheme }: Props) {
           </svg>
         </div>
         <div>
-          <div className="brand-title">ESP32-S3 Lab</div>
-          <div className="brand-sub">Simulador IoT</div>
+          <div className="brand-title">ESP32-S3</div>
+          <div className="brand-sub">Adriuino</div>
         </div>
       </div>
       <input className="project-name" value={name} onChange={(e) => setName(e.target.value)} title="Nombre del proyecto" />
