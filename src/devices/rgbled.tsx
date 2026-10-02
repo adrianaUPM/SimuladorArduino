@@ -26,6 +26,7 @@ export const rgbled: DeviceDef<RgbState> = {
   height: 80,
   terminals,
   prefix: 'RGB',
+  flexLegs: true,
   props: [
     {
       key: 'common', label: 'Tipo', type: 'select', default: 'cathode',

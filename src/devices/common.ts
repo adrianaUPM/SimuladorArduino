@@ -1,14 +1,21 @@
 import type { EvalCtx, TerminalDef } from './types';
 
-/** Avisa si un componente tiene unos terminales conectados y otros no */
+/**
+ * Avisa si un componente tiene unos terminales conectados y otros no. Un
+ * terminal enchufado en una tira de la protoboard en la que no hay nada más
+ * cuenta como NO conectado.
+ */
 export function checkOpen(c: EvalCtx, terms: TerminalDef[], name: string): boolean {
-  const conn = terms.filter((t) => c.connected(t.id));
+  const conn = terms.filter((t) => c.linked(t.id));
   if (conn.length > 0 && conn.length < terms.length) {
-    const missing = terms.filter((t) => !c.connected(t.id));
+    const missing = terms.filter((t) => !c.linked(t.id));
+    const inStrip = missing.some((t) => c.connected(t.id));
     c.issue(
       'warning',
       `Circuito abierto en ${name}`,
-      `Falta conectar: ${missing.map((t) => t.label).join(', ')}. Sin un camino cerrado hasta GND no circula corriente.`,
+      `No llega a ningún sitio: ${missing.map((t) => t.label).join(', ')}.` +
+        (inStrip ? ' Está enchufada en una tira de la protoboard en la que no hay nada más conectado.' : '') +
+        ' Sin un camino cerrado (GPIO/3V3 → … → GND) no circula corriente.',
       missing.map((t) => t.id),
     );
     return true;

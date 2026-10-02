@@ -57,6 +57,9 @@ interface AppState {
   addComponent(type: string, x: number, y: number, exact?: boolean): string | null;
   moveSelection(dx: number, dy: number, base: Map<string, Point>, wireBase: Map<string, Point[]>): void;
   updateProps(id: string, patch: Record<string, any>, live?: boolean): void;
+  /** dobla (offset) o endereza (null) una pata; record = guardar en el historial */
+  setLeg(id: string, term: string, offset: Point | null, record?: boolean): void;
+  resetLegs(id: string): void;
   rotateSelection(): void;
   deleteSelection(): void;
   addWire(a: WireEnd, b: WireEnd, points: Point[]): void;
@@ -176,6 +179,28 @@ export const useApp = create<AppState>((set, get) => ({
     get().mutate((c) => ({
       ...c,
       components: c.components.map((comp) => (comp.id === id ? { ...comp, props: { ...comp.props, ...patch } } : comp)),
+    }));
+  },
+
+  setLeg: (id, term, offset, record = true) => {
+    if (record) get().checkpoint();
+    get().mutate((c) => ({
+      ...c,
+      components: c.components.map((comp) => {
+        if (comp.id !== id) return comp;
+        const legs = { ...(comp.legs ?? {}) };
+        if (offset && (offset.x || offset.y)) legs[term] = offset;
+        else delete legs[term];
+        return { ...comp, legs: Object.keys(legs).length ? legs : undefined };
+      }),
+    }));
+  },
+
+  resetLegs: (id) => {
+    get().checkpoint();
+    get().mutate((c) => ({
+      ...c,
+      components: c.components.map((comp) => (comp.id === id ? { ...comp, legs: undefined } : comp)),
     }));
   },
 

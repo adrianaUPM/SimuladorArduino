@@ -38,11 +38,38 @@ export function localToWorld(inst: ComponentInstance, w: number, h: number, p: P
   return { x: inst.x + cx + rx, y: inst.y + cy + ry };
 }
 
+/** inversa de localToWorld */
+export function worldToLocal(inst: ComponentInstance, w: number, h: number, p: Point): Point {
+  const cx = w / 2;
+  const cy = h / 2;
+  const rx = p.x - inst.x - cx;
+  const ry = p.y - inst.y - cy;
+  let dx = rx;
+  let dy = ry;
+  switch (inst.rotation) {
+    case 90:
+      dx = ry;
+      dy = -rx;
+      break;
+    case 180:
+      dx = -rx;
+      dy = -ry;
+      break;
+    case 270:
+      dx = -ry;
+      dy = rx;
+      break;
+  }
+  return { x: cx + dx, y: cy + dy };
+}
+
 export function terminalPos(inst: ComponentInstance, termId: string): { p: Point; dir: Dir } | null {
   const def = getDevice(inst.type);
   const t = def?.terminals.find((x) => x.id === termId);
   if (!def || !t) return null;
-  return { p: localToWorld(inst, def.width, def.height, t), dir: rotateDir(t.dir, inst.rotation) };
+  const off = inst.legs?.[termId];
+  const local = off ? { x: t.x + off.x, y: t.y + off.y } : t;
+  return { p: localToWorld(inst, def.width, def.height, local), dir: off ? 'none' : rotateDir(t.dir, inst.rotation) };
 }
 
 export function componentBounds(inst: ComponentInstance): { x: number; y: number; w: number; h: number } {

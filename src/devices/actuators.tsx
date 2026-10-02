@@ -111,6 +111,7 @@ export const motor: DeviceDef<MotorState> = {
   width: 64,
   height: 72,
   prefix: 'M',
+  flexLegs: true,
   terminals: motorTerms,
   props: [],
   Render: ({ state }) => {
@@ -172,6 +173,7 @@ export const buzzer: DeviceDef<BuzzerState> = {
   width: 48,
   height: 56,
   prefix: 'BZ',
+  flexLegs: true,
   terminals: buzTerms,
   props: [
     {

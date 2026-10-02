@@ -115,6 +115,21 @@ function ComponentProps({ comp }: { comp: ComponentInstance }) {
       )}
       {isBoard && <BoardPins comp={comp} />}
 
+      {def.flexLegs && (
+        <div className="section">
+          <div className="section-title">Patas</div>
+          <div className="muted">
+            Con el componente seleccionado, arrastra el extremo de una pata (cuadrado naranja) para doblarla y enchufarla en
+            otro agujero. Doble clic sobre el extremo la endereza.
+          </div>
+          {comp.legs && (
+            <button className="btn sm outline" style={{ marginTop: 8 }} onClick={() => useApp.getState().resetLegs(comp.id)}>
+              Enderezar patas
+            </button>
+          )}
+        </div>
+      )}
+
       <div className="section row">
         <button className="btn sm outline" onClick={() => useApp.getState().rotateSelection()}>
           <IconRotate size={14} /> Girar <kbd>R</kbd>

@@ -7,7 +7,7 @@ import type { DeviceDef, TerminalDef } from '../devices/types';
 import { useSim } from '../state/simStore';
 import { useApp } from '../state/store';
 import {
-  componentBounds, distToSegment, pathFromPoints, routePoints, snap, terminalPos, wirePoints,
+  componentBounds, distToSegment, pathFromPoints, routePoints, snap, terminalPos, wirePoints, worldToLocal,
 } from '../utils/geometry';
 import { HoleIndex, holePositions, pluggedInto, snapCorrection } from '../utils/sockets';
 import { sim } from './controller';
@@ -28,7 +28,8 @@ type Mode =
     }
   | { kind: 'marquee'; start: Point; cur: Point }
   | { kind: 'wire'; from: WireEnd; points: Point[]; cursor: Point; downClient: Point | null; dragged: boolean }
-  | { kind: 'handle'; wireId: string; index: number; moved: boolean };
+  | { kind: 'handle'; wireId: string; index: number; moved: boolean }
+  | { kind: 'leg'; comp: string; term: string; holes: HoleIndex; moved: boolean };
 
 interface ViewState {
   x: number;
@@ -84,6 +85,7 @@ export const CircuitCanvas = forwardRef<CanvasHandle, { onZoom?(z: number): void
       enter: (e, c, t, k) => handlersRef.current.enter(e, c, t, k),
       move: (e) => handlersRef.current.move(e),
       leave: () => handlersRef.current.leave(),
+      straighten: (c, t) => handlersRef.current.straighten(c, t),
     }),
     [],
   );
@@ -455,6 +457,22 @@ export const CircuitCanvas = forwardRef<CanvasHandle, { onZoom?(z: number): void
         setHoverTerm(near ? near.key : null);
         break;
       }
+      case 'leg': {
+        const st = useApp.getState();
+        const inst = st.project.circuit.components.find((c) => c.id === m.comp);
+        const def = inst && getDevice(inst.type);
+        const t = def?.terminals.find((x) => x.id === m.term);
+        if (!inst || !def || !t) return;
+        if (!m.moved) {
+          st.checkpoint();
+          setMode({ ...m, moved: true });
+        }
+        // el extremo encaja en el agujero más cercano (o en la rejilla fina)
+        const target = m.holes.nearest(p, 10) ?? { x: snap(p.x, 4), y: snap(p.y, 4) };
+        const local = worldToLocal(inst, def.width, def.height, target);
+        st.setLeg(inst.id, t.id, { x: local.x - t.x, y: local.y - t.y }, false);
+        break;
+      }
       case 'handle': {
         const st = useApp.getState();
         const w = st.project.circuit.wires.find((x) => x.id === m.wireId);
@@ -512,6 +530,7 @@ export const CircuitCanvas = forwardRef<CanvasHandle, { onZoom?(z: number): void
         break;
       }
       case 'handle':
+      case 'leg':
         setMode({ kind: 'none' });
         break;
     }
@@ -565,7 +584,17 @@ export const CircuitCanvas = forwardRef<CanvasHandle, { onZoom?(z: number): void
   };
 
   handlersRef.current = {
-    down: (e, end) => onTerminalDown(e, end),
+    down: (e, end) => {
+      if (e.button === 0 && modeRef.current.kind === 'none' && legEditable(end.comp)) {
+        e.stopPropagation();
+        svg.current!.setPointerCapture(e.pointerId);
+        setTooltip(null);
+        setMode({ kind: 'leg', comp: end.comp, term: end.term, holes: new HoleIndex(holePositions(useApp.getState().project.circuit)), moved: false });
+        return;
+      }
+      onTerminalDown(e, end);
+    },
+    straighten: (comp, term) => useApp.getState().setLeg(comp, term, null),
     enter: (e, c, t, key) => {
       if (modeRef.current.kind !== 'wire') setHoverTerm(key);
       showTooltip(e, c, t);
@@ -577,6 +606,14 @@ export const CircuitCanvas = forwardRef<CanvasHandle, { onZoom?(z: number): void
     },
   };
 
+  /** las patas de un componente flexible se doblan cuando es el único seleccionado */
+  const legEditable = (id: string) => {
+    const sel = useApp.getState().selection;
+    if (sel.comps.length !== 1 || sel.comps[0] !== id || sel.wires.length) return false;
+    const comp = useApp.getState().project.circuit.components.find((c) => c.id === id);
+    return !!comp && !!getDevice(comp.type)?.flexLegs;
+  };
+
   /** props por componente de la capa de terminales (cadenas para que memo funcione) */
   const termLayerProps = (id: string) => {
     const pre = `${id}:`;
@@ -585,6 +622,7 @@ export const CircuitCanvas = forwardRef<CanvasHandle, { onZoom?(z: number): void
       hl: pick(highlighted.terms),
       issue: pick(issueTerms),
       target: wireMode && hoverTerm?.startsWith(pre) ? hoverTerm : '',
+      editable: selComps.has(id) && selection.comps.length === 1 && !selection.wires.length && !!getDevice(compMap.get(id)?.type ?? '')?.flexLegs,
       handlers: termHandlers,
     };
   };
@@ -720,6 +758,7 @@ export const CircuitCanvas = forwardRef<CanvasHandle, { onZoom?(z: number): void
 
 interface TermHandlers {
   down(e: React.PointerEvent, end: WireEnd): void;
+  straighten(comp: string, term: string): void;
   enter(e: React.PointerEvent, comp: ComponentInstance, term: TerminalDef, key: string): void;
   move(e: React.PointerEvent): void;
   leave(): void;
@@ -727,8 +766,8 @@ interface TermHandlers {
 
 /** zonas activas de los terminales de un componente (memo: la protoboard tiene 830) */
 const TermLayer = memo(function TermLayer({
-  comp, hl, issue, target, handlers,
-}: { comp: ComponentInstance; hl: string; issue: string; target: string; handlers: TermHandlers }) {
+  comp, hl, issue, target, editable, handlers,
+}: { comp: ComponentInstance; hl: string; issue: string; target: string; editable: boolean; handlers: TermHandlers }) {
   const def = getDevice(comp.type);
   if (!def) return null;
   const hlSet = new Set(hl ? hl.split('|') : []);
@@ -739,19 +778,24 @@ const TermLayer = memo(function TermLayer({
         const tp = terminalPos(comp, t.id);
         if (!tp) return null;
         const key = termKey(comp.id, t.id);
-        const cls = `term${def.socket ? ' hole' : ''}${hlSet.has(key) ? ' hl' : ''}${target === key ? ' target' : ''}${issueSet.has(key) ? ' issue' : ''}`;
+        const cls = `term${def.socket ? ' hole' : ''}${editable ? ' leg-edit' : ''}${hlSet.has(key) ? ' hl' : ''}${target === key ? ' target' : ''}${issueSet.has(key) ? ' issue' : ''}`;
         return (
           <g
             key={key}
             data-term={key}
             className={cls}
             onPointerDown={(e) => handlers.down(e, { comp: comp.id, term: t.id })}
+            onDoubleClick={editable ? (e) => {
+              e.stopPropagation();
+              handlers.straighten(comp.id, t.id);
+            } : undefined}
             onPointerEnter={(e) => handlers.enter(e, comp, t, key)}
             onPointerMove={handlers.move}
             onPointerLeave={handlers.leave}
           >
             <circle className="term-hit" cx={tp.p.x} cy={tp.p.y} r={def.socket ? 5.5 : 7} />
             <circle className="term-ring" cx={tp.p.x} cy={tp.p.y} r={def.socket ? 4 : 4.5} />
+            {editable && <rect className="leg-handle" x={tp.p.x - 3.5} y={tp.p.y - 3.5} width={7} height={7} rx={1.5} />}
           </g>
         );
       })}
@@ -793,6 +837,18 @@ const ComponentView = memo(function ComponentView({ inst, state, selected, runni
     >
       <rect className="hit" x={-2} y={-2} width={def.width + 4} height={def.height + 4} />
       <Render inst={inst} state={state} selected={selected} running={running} setInput={setInput} setLiveProp={setLiveProp} />
+      {inst.legs &&
+        def.terminals.map((t) => {
+          const o = inst.legs![t.id];
+          if (!o) return null;
+          return (
+            <path
+              key={t.id}
+              className="bent-leg"
+              d={`M${t.x} ${t.y} L${t.x + o.x} ${t.y + o.y}`}
+            />
+          );
+        })}
       {worst === 'error' && <rect className="err-outline" x={-pad} y={-pad} width={def.width + pad * 2} height={def.height + pad * 2} rx={6} />}
       {worst === 'warning' && <rect className="warn-outline" x={-pad} y={-pad} width={def.width + pad * 2} height={def.height + pad * 2} rx={6} />}
       {selected && <rect className="sel-outline" x={-pad - 2} y={-pad - 2} width={def.width + pad * 2 + 4} height={def.height + pad * 2 + 4} rx={7} />}

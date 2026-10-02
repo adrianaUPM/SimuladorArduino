@@ -1389,3 +1389,21 @@ kbd {
   min-height: 0;
   flex-direction: column;
 }
+
+/* patas dobladas */
+.bent-leg {
+  fill: none;
+  stroke: #9aa4ae;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  pointer-events: none;
+}
+.term.leg-edit {
+  cursor: grab;
+}
+.term .leg-handle {
+  fill: var(--warn);
+  stroke: #fff;
+  stroke-width: 1;
+  pointer-events: none;
+}

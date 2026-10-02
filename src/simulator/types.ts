@@ -9,6 +9,8 @@ export interface ComponentInstance {
   y: number;
   rotation: Rotation;
   props: Record<string, any>;
+  /** patas dobladas: desplazamiento del extremo de cada terminal (coordenadas locales) */
+  legs?: Record<string, Point>;
 }
 
 export interface WireEnd {

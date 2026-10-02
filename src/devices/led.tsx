@@ -79,6 +79,7 @@ export const led: DeviceDef<LedState> = {
   height: 72,
   terminals,
   prefix: 'LED',
+  flexLegs: true,
   props: [
     {
       key: 'color', label: 'Color', type: 'select', default: 'red',

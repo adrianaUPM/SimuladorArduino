@@ -381,6 +381,11 @@ export function evaluate(circuit: Circuit, sol: Solution, board: BoardView, inpu
       i: (k) => sol.iAvg.get(`${c.id}/${k}`) ?? 0,
       iPeak: (k) => sol.iPeak.get(`${c.id}/${k}`) ?? 0,
       connected: (t) => netlist.connected.has(termKey(c.id, t)),
+      linked: (t) => {
+        const n = net(t);
+        if (n === 0) return true; // está en GND
+        return (netlist.members[n] ?? []).some((m) => m.comp !== c.id && !getDevice(compById.get(m.comp)?.type ?? '')?.socket);
+      },
       driven: (t) => sol.driven[net(t)] ?? false,
       netPeers: (t) =>
         (netlist.members[net(t)] ?? [])

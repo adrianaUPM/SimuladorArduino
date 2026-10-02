@@ -216,6 +216,17 @@ export const esp32s3: DeviceDef<Esp32State> = {
           );
         }
         const drives = st.mode === 'output' || st.mode === 'pwm' || st.mode === 'servo' || st.mode === 'tone' || st.mode === 'open_drain';
+        if (c.board.running && st.mode !== 'unset' && !c.linked(p.id)) {
+          c.issue(
+            'warning',
+            `GPIO${g} no está conectado a nada`,
+            drives
+              ? `El programa usa GPIO${g} como salida, pero el pin no llega a ningún componente: falta el cable o la conexión en la protoboard.`
+              : `El programa lee GPIO${g}, pero el pin no está conectado a ningún componente.`,
+            [p.id],
+          );
+          continue;
+        }
         if (drives) {
           const ipk = Math.abs(c.iPeak(p.id));
           const peers = c.netPeers(p.id).filter((m) => c.connected(m.term) || m.comp !== c.inst.id);

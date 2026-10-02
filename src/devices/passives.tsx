@@ -1,7 +1,7 @@
 // Resistencia, pulsador y potenciómetro.
 
 import { useRef } from 'react';
-import { clamp, formatOhms, MONO } from './common';
+import { checkOpen, clamp, formatOhms, MONO } from './common';
 import type { DeviceDef, TerminalDef } from './types';
 
 // ------------------------------------------------------------------ resistencia
@@ -30,6 +30,7 @@ export const resistor: DeviceDef<{ current: number; power: number }> = {
   width: 64,
   height: 16,
   prefix: 'R',
+  flexLegs: true,
   terminals: [
     { id: '1', label: 'Terminal 1', x: 0, y: 8, desc: 'Terminal de la resistencia (sin polaridad).', kind: 'passive', dir: 'left' },
     { id: '2', label: 'Terminal 2', x: 64, y: 8, desc: 'Terminal de la resistencia (sin polaridad).', kind: 'passive', dir: 'right' },
@@ -60,6 +61,7 @@ export const resistor: DeviceDef<{ current: number; power: number }> = {
     c.resistor(c.n('1'), c.n('2'), Number(c.props.resistance) || 220, 'r');
   },
   evaluate(c) {
+    checkOpen(c, resistor.terminals, 'la resistencia');
     const r = Number(c.props.resistance) || 220;
     const i = c.iPeak('r');
     const p = i * i * r;

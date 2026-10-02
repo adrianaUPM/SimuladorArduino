@@ -99,6 +99,8 @@ export interface EvalCtx {
   /** corriente de pico de un elemento */
   iPeak(key: string): number;
   connected(term: string): boolean;
+  /** ¿hay algún otro componente o cable en el net de este terminal (no basta una tira vacía)? */
+  linked(term: string): boolean;
   /** ¿hay camino conductor desde el terminal a alguna fuente/GND? */
   driven(term: string): boolean;
   /** terminales del mismo net (excluye el propio) */
@@ -141,4 +143,6 @@ export interface DeviceDef<S = any> {
   socket?: boolean;
   /** se dibuja por debajo del resto de componentes */
   under?: boolean;
+  /** sus patas se pueden doblar para enchufarlas en otros agujeros */
+  flexLegs?: boolean;
 }
