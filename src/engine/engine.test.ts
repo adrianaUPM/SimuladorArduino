@@ -9,6 +9,8 @@ function mockHal() {
   let out = '';
   let t = 0;
   const inputs = new Map<number, number>();
+  /** teclas pulsadas que devolverán los próximos barridos del teclado */
+  const keys: [number, number][] = [];
   const hal: Hal = {
     millis: () => t,
     micros: () => t * 1000,
@@ -28,11 +30,14 @@ function mockHal() {
     i2cBegin: () => {},
     i2cProbe: () => true,
     oledShow: () => log.push('oled'),
+    lcdShow: (_a, f) => log.push(`lcd ${f.ddram.map((r) => String.fromCharCode(...r).trimEnd()).join('|')}`),
+    keypadScan: () => keys.splice(0, 1),
+    pulseIn: () => 1166,
     attachInterrupt: () => {},
     detachInterrupt: () => {},
     warn: (m) => log.push(`warn ${m}`),
   };
-  return { hal, log, out: () => out, inputs, advance: (ms: number) => (t += ms) };
+  return { hal, log, out: () => out, inputs, keys, advance: (ms: number) => (t += ms) };
 }
 
 function run(src: string, maxSleeps = 10) {

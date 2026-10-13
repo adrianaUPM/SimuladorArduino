@@ -53,6 +53,25 @@ export function wrapInt(v: number, bits = 32, unsigned = false): number {
   return r;
 }
 
+/** Contenido de un LCD de caracteres tal y como lo ve la pantalla */
+export interface LcdFrame {
+  cols: number;
+  rows: number;
+  /** memoria de texto: 40 códigos de carácter por línea */
+  ddram: number[][];
+  /** desplazamiento de la ventana visible (scrollDisplayLeft/Right) */
+  shift: number;
+  /** 8 caracteres personalizados (createChar): 8 filas de 5 bits */
+  cgram: number[][];
+  backlight: boolean;
+  displayOn: boolean;
+  cursor: boolean;
+  blink: boolean;
+  cursorX: number;
+  cursorY: number;
+  version: number;
+}
+
 /** Interfaz que el intérprete usa para hablar con el circuito simulado */
 export interface Hal {
   millis(): number;
@@ -76,6 +95,15 @@ export interface Hal {
   /** ¿responde un dispositivo en esta dirección del bus I2C? */
   i2cProbe(addr: number): boolean;
   oledShow(addr: number, width: number, height: number, buffer: Uint8Array, inverted: boolean): void;
+  /** LCD de caracteres (HD44780 con adaptador I2C) */
+  lcdShow(addr: number, frame: LcdFrame): void;
+  /**
+   * Barrido de un teclado matricial: devuelve las parejas [fila, columna]
+   * (índices dentro de rowPins/colPins) cuyas teclas están pulsadas.
+   */
+  keypadScan(rowPins: number[], colPins: number[]): [number, number][];
+  /** duración en µs del pulso al nivel indicado (0 = no llegó ningún pulso) */
+  pulseIn(pin: number, level: number): number;
   attachInterrupt(pin: number, mode: number, fn: string): void;
   detachInterrupt(pin: number): void;
   warn(message: string, line?: number): void;

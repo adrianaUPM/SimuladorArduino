@@ -45,6 +45,8 @@ export interface Declarator {
   type: VarType;
   /** null = escalar; número = tamaño de array; -1 = tamaño deducido del inicializador */
   arraySize: Expr | null | -1;
+  /** segunda dimensión de un array 2D (char teclas[4][4]) */
+  arraySize2?: Expr | null;
   init: Expr | null;
   ctorArgs: Expr[] | null;
   pos: number;

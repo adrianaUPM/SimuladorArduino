@@ -4,19 +4,23 @@
 import { gpioExists, isAdc } from '../devices/esp32s3/pins';
 import type { BoardView, OledFrame, PinState } from '../devices/types';
 import type { SimClock } from '../engine/runner';
-import { RuntimeError, type Hal } from '../engine/values';
+import { RuntimeError, type Hal, type LcdFrame } from '../engine/values';
 
 export interface BoardHost {
   clock: SimClock;
   /** tensión del GPIO y si su net tiene un nivel definido */
   pinVoltage(gpio: number): { v: number; driven: boolean; connected: boolean };
   i2cProbe(addr: number): boolean;
+  keypadScan(rowPins: number[], colPins: number[]): [number, number][];
+  /** µs que dura el pulso que recibe el pin (0 = ninguno) */
+  pulseIn(pin: number, level: number): number;
   serialOut(text: string): void;
   warn(msg: string, line?: number): void;
   queueIsr(fn: string): void;
   /** el estado de las salidas ha cambiado */
   outputsChanged(): void;
-  oledChanged(): void;
+  /** ha cambiado el contenido de una pantalla (OLED/LCD) */
+  displayChanged(): void;
 }
 
 const MODES: Record<number, PinState['mode']> = {
@@ -34,6 +38,9 @@ export class Esp32Board implements Hal, BoardView {
   private pins = new Map<number, PinState>();
   i2c = { sda: 8, scl: 9, begun: false };
   private oled = new Map<number, OledFrame>();
+  private lcd = new Map<number, LcdFrame>();
+  /** instante (ms) del último flanco de bajada de cada pin de salida: pulso de disparo */
+  private lastPulse = new Map<number, number>();
   private serialIn: number[] = [];
   private interrupts = new Map<number, { mode: number; fn: string; last: number }>();
   private toneEnds = new Map<number, number>();
@@ -45,6 +52,8 @@ export class Esp32Board implements Hal, BoardView {
   reset() {
     this.pins.clear();
     this.oled.clear();
+    this.lcd.clear();
+    this.lastPulse.clear();
     this.serialIn = [];
     this.interrupts.clear();
     this.toneEnds.clear();
@@ -58,6 +67,14 @@ export class Esp32Board implements Hal, BoardView {
   }
   oledFrame(addr: number): OledFrame | undefined {
     return this.oled.get(addr);
+  }
+  lcdFrame(addr: number): LcdFrame | undefined {
+    return this.lcd.get(addr);
+  }
+  /** ms desde el último pulso HIGH→LOW del pin (Infinity si nunca) */
+  sincePulse(gpio: number): number {
+    const t = this.lastPulse.get(gpio);
+    return t === undefined ? Infinity : this.host.clock.now() - t;
   }
   /** pines con PWM activo -> fracción del periodo en alto */
   pwmMap(): Map<number, number> {
@@ -168,6 +185,7 @@ export class Esp32Board implements Hal, BoardView {
       this.warnOnce(`dw${pin}`, `digitalWrite(${pin}, ...) sin pinMode(${pin}, OUTPUT): el pin no está configurado como salida y no cambia.`);
       return;
     }
+    if (st.level && !value) this.lastPulse.set(pin, this.host.clock.now());
     this.set(pin, { level: value ? 1 : 0 });
   }
 
@@ -258,7 +276,31 @@ export class Esp32Board implements Hal, BoardView {
 
   oledShow(addr: number, w: number, h: number, buffer: Uint8Array, inverted: boolean) {
     this.oled.set(addr, { w, h, buf: buffer, inverted, version: ++this.frameCounter });
-    this.host.oledChanged();
+    this.host.displayChanged();
+  }
+
+  lcdShow(addr: number, frame: LcdFrame) {
+    this.lcd.set(addr, { ...frame, version: ++this.frameCounter });
+    this.host.displayChanged();
+  }
+
+  keypadScan(rowPins: number[], colPins: number[]): [number, number][] {
+    for (const p of [...rowPins, ...colPins]) this.checkPin(p, 'Keypad');
+    return this.host.keypadScan(rowPins, colPins);
+  }
+
+  pulseIn(pin: number, level: number): number {
+    this.checkPin(pin, 'pulseIn');
+    if (this.pin(pin).mode === 'output') this.warnOnce(`pi${pin}`, `pulseIn(${pin}): el pin está configurado como salida; debe ser INPUT.`);
+    const us = this.host.pulseIn(pin, level);
+    if (us < 0) {
+      this.warnOnce(
+        `pi-trig${pin}`,
+        `pulseIn(${pin}): el sensor no ha recibido el pulso de disparo. Antes de medir pon TRIG a HIGH unos 10 µs y vuelve a LOW (digitalWrite + delayMicroseconds).`,
+      );
+      return 0;
+    }
+    return us;
   }
 
   attachInterrupt(pin: number, mode: number, fn: string) {

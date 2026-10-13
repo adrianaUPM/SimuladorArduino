@@ -20,7 +20,7 @@ export const ANALOG_KINDS: Record<string, { label: string; unit: string; min: nu
 
 const aTerms = sensorTerms('Salida analógica 0..VCC proporcional a la magnitud. Conéctala a un pin ADC (GPIO1..20).');
 
-function Slider({ value, onChange, color }: { value: number; onChange: (v: number) => void; color: string }) {
+export function Slider({ value, onChange, color, x = 6, y = 34, w = 44 }: { value: number; onChange: (v: number) => void; color: string; x?: number; y?: number; w?: number }) {
   const ref = useRef<SVGRectElement>(null);
   const set = (clientX: number) => {
     const r = ref.current!.getBoundingClientRect();
@@ -38,9 +38,9 @@ function Slider({ value, onChange, color }: { value: number; onChange: (v: numbe
         if (e.buttons & 1) set(e.clientX);
       }}
     >
-      <rect ref={ref} x={6} y={34} width={44} height={10} rx={5} fill="#0e1a14" />
-      <rect x={6} y={34} width={(44 * value) / 100} height={10} rx={5} fill={color} />
-      <circle cx={6 + (44 * value) / 100} cy={39} r={5.5} fill="#f4f6f8" stroke="#555" />
+      <rect ref={ref} x={x} y={y} width={w} height={10} rx={5} fill="#0e1a14" />
+      <rect x={x} y={y} width={(w * value) / 100} height={10} rx={5} fill={color} />
+      <circle cx={x + (w * value) / 100} cy={y + 5} r={5.5} fill="#f4f6f8" stroke="#555" />
     </g>
   );
 }

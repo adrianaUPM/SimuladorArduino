@@ -278,7 +278,12 @@ class Parser {
         if (this.is(']')) d.arraySize = -1;
         else d.arraySize = this.parseExpr();
         this.expect(']');
-        if (this.is('[')) this.error('Los arrays multidimensionales no están soportados');
+        if (this.accept('[')) {
+          if (this.is(']')) this.error(`La segunda dimensión del array '${d.name}' necesita un tamaño`);
+          d.arraySize2 = this.parseExpr();
+          this.expect(']');
+          if (this.is('[')) this.error('Solo se admiten arrays de una o dos dimensiones');
+        }
       }
       if (this.is('(') && d.arraySize === null) {
         this.next();
@@ -293,6 +298,12 @@ class Parser {
         else this.error('Inicialización no válida');
       } else if (this.accept('=')) {
         d.init = this.is('{') ? this.parseInitList() : this.parseAssign();
+        // Keypad teclado = Keypad(...);  ->  igual que Keypad teclado(...);
+        if (type.base === 'object' && d.arraySize === null && d.init.kind === 'call' &&
+            d.init.callee.kind === 'ident' && d.init.callee.name === type.className) {
+          d.ctorArgs = d.init.args;
+          d.init = null;
+        }
       } else if (this.is('{')) {
         d.init = this.parseInitList();
       }

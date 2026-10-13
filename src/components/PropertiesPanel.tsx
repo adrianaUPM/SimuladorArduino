@@ -1,4 +1,5 @@
 import { formatOhms } from '../devices/common';
+import { KEYPAD_KEYS } from '../devices/keypad';
 import { getDevice } from '../devices/registry';
 import type { PropDef } from '../devices/types';
 import { useSim } from '../state/simStore';
@@ -288,6 +289,18 @@ function liveInfo(type: string, s: any): [string, string][] {
       return [['Salida', `${s.out.toFixed(2)} V`], ['Detectando', s.active ? 'sí' : 'no']];
     case 'oled':
       return [['Alimentada', s.powered ? 'sí' : 'no'], ['En el bus I2C', s.ready ? 'sí' : 'no'], ['Dirección', `0x${s.addr.toString(16).toUpperCase()}`]];
+    case 'lcd':
+      return [['Alimentada', s.powered ? 'sí' : 'no'], ['En el bus I2C', s.ready ? 'sí' : 'no'], ['Dirección', `0x${s.addr.toString(16).toUpperCase()}`]];
+    case 'keypad':
+      return [['Tecla pulsada', s.key ? KEYPAD_KEYS[s.key[0]][s.key[1]] : '—']];
+    case 'sevenseg': {
+      const on = Object.entries(s.seg as Record<string, number>).filter(([, b]) => b > 0.05).map(([k]) => k);
+      return [['Segmentos encendidos', on.length ? on.join(' ') : '—']];
+    }
+    case 'ldr':
+      return [['Luz', `${s.lux >= 100 ? Math.round(s.lux) : s.lux.toFixed(1)} lx`], ['Resistencia', formatOhms(s.r)], ['Corriente', mA(Math.abs(s.current))]];
+    case 'ultrasonic':
+      return [['Distancia', `${s.distance} cm`], ['Eco (pulseIn)', `${Math.round(s.distance * 58.3)} µs`], ['Alimentado', s.powered ? 'sí' : 'no']];
     case 'vcc':
       return [['Corriente', mA(s.current)]];
     default:
@@ -319,6 +332,7 @@ function WireProps({ id }: { id: string }) {
       </div>
       <div className="section">
         <div className="muted">
+          Arrastra un <b>extremo</b> (círculo grande) hasta otro pin o agujero para cambiar la conexión sin borrar el cable.
           Arrastra los puntos para mover los codos. Doble clic sobre el cable añade un codo; doble clic sobre un punto lo elimina.
         </div>
       </div>

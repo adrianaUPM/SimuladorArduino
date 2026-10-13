@@ -6,7 +6,7 @@
 
 import type { ValType } from './ast';
 import * as gfx from './gfx';
-import { isArr, RuntimeError, Sleep, toNum, type Hal, type ObjValue, type Value } from './values';
+import { isArr, RuntimeError, Sleep, toNum, type ArrValue, type Hal, type LcdFrame, type ObjValue, type Value } from './values';
 
 export interface LibState {
   ledcChannels: Map<number, { freq: number; res: number; pins: Set<number> }>;
@@ -93,6 +93,10 @@ export const CONSTANTS: Record<string, { value: number; t: ValType }> = {
   SSD1306_SWITCHCAPVCC: c(0x02), SSD1306_EXTERNALVCC: c(0x01),
   SSD1306_WHITE: c(1), SSD1306_BLACK: c(0), SSD1306_INVERSE: c(2),
   WHITE: c(1), BLACK: c(0), INVERSE: c(2),
+  // Keypad
+  NO_KEY: c(0, 'char'), IDLE: c(0), PRESSED: c(1), HOLD: c(2), RELEASED: c(3),
+  // LiquidCrystal
+  LCD_5x8DOTS: c(0), LCD_5x10DOTS: c(4),
   // atenuación ADC (se aceptan, sin efecto)
   ADC_0db: c(0), ADC_2_5db: c(1), ADC_6db: c(2), ADC_11db: c(3),
   NULL: c(0), nullptr: c(0),
@@ -395,6 +399,27 @@ export const FUNCTIONS: Record<string, FnDef> = {
   interrupts: f('interrupts()', 'Habilita interrupciones.', 'void', 0, 0, () => {}),
   noInterrupts: f('noInterrupts()', 'Deshabilita interrupciones.', 'void', 0, 0, () => {}),
 
+  pulseIn: f('pulseIn(pin, nivel[, timeoutUs])', 'Mide en µs la duración de un pulso HIGH o LOW (p. ej. el ECHO del HC-SR04). Devuelve 0 si no llega en el tiempo límite (1 s por defecto).', 'int', 2, 3,
+    ({ rt, args }) => {
+      const us = rt.hal.pulseIn(int(args, 0), int(args, 1) ? 1 : 0);
+      if (us > 0) return Math.round(us);
+      // sin pulso: el programa se queda esperando todo el tiempo límite
+      return new Sleep((args.length > 2 ? n(args, 2) : 1_000_000) / 1000);
+    }),
+
+  // --- teclado matricial
+  makeKeymap: f('makeKeymap(teclas)', 'Convierte la tabla de teclas char[FILAS][COLS] en el mapa que espera Keypad.', 'array', 1, 1,
+    ({ args, line }) => {
+      const a = args[0];
+      if (!isArr(a)) throw new RuntimeError('makeKeymap(): el argumento debe ser el array de teclas', line);
+      const flat: Value[] = [];
+      for (const x of a.items) {
+        if (isArr(x)) flat.push(...x.items);
+        else flat.push(x);
+      }
+      return { __arr: true, items: flat, elem: a.elem } as ArrValue;
+    }),
+
   // --- varios
   F: f('F("texto")', 'Macro para guardar cadenas en flash (sin efecto).', 'string', 1, 1, ({ args }) => args[0]),
   temperatureRead: f('temperatureRead()', 'Temperatura interna del chip (°C, aproximada).', 'float', 0, 0, () => 42.5),
@@ -439,6 +464,133 @@ function oledText(cx: CallCtx & { self: ObjValue }, newline: boolean) {
   let text = cx.args.length ? formatValue(cx.args[0], cx.types[0], cx.args.length > 1 ? int(cx.args, 1) : undefined) : '';
   if (newline) text += '\n';
   gfx.writeText(g, text);
+}
+
+// ------------------------------------------------------------------ Keypad
+
+interface KeypadState {
+  map: number[];
+  rowPins: number[];
+  colPins: number[];
+  rows: number;
+  cols: number;
+  /** tecla pulsada ahora (índice fila*cols+col) o -1 */
+  cur: number;
+  state: number;
+  pressedAt: number;
+  lastScan: number;
+  debounce: number;
+  holdTime: number;
+}
+
+const pinList = (v: Value, count: number, what: string, line: number): number[] => {
+  if (!isArr(v)) throw new RuntimeError(`Keypad: ${what} debe ser un array de pines, p. ej. byte ${what}[] = {4, 5, 6, 7};`, line);
+  if (v.items.length < count) throw new RuntimeError(`Keypad: ${what} tiene ${v.items.length} pines pero se indican ${count}`, line);
+  return v.items.slice(0, count).map((x) => Math.trunc(toNum(x)));
+};
+
+/**
+ * Barre el teclado como la librería (filas con pull-up, columnas a nivel bajo
+ * de una en una). Devuelve true si hay una pulsación nueva.
+ */
+function keypadScan(rt: RT, k: KeypadState): boolean {
+  const now = rt.hal.millis();
+  if (now - k.lastScan < k.debounce) return false;
+  k.lastScan = now;
+  const hits = rt.hal.keypadScan(k.rowPins, k.colPins);
+  const idx = hits.length ? hits[0][0] * k.cols + hits[0][1] : -1;
+  const prev = k.cur;
+  k.cur = idx;
+  if (idx !== prev) {
+    if (idx >= 0) {
+      k.state = 1; // PRESSED
+      k.pressedAt = now;
+      return true;
+    }
+    k.state = 3; // RELEASED
+    return false;
+  }
+  if (idx >= 0 && k.state === 1 && now - k.pressedAt >= k.holdTime) k.state = 2; // HOLD
+  else if (idx < 0) k.state = 0; // IDLE
+  return false;
+}
+
+// ------------------------------------------------------------------ LCD
+
+interface LcdState extends LcdFrame {
+  addr: number;
+  began: boolean;
+}
+
+function lcdPush(rt: RT, l: LcdState) {
+  if (!l.began) return;
+  rt.hal.lcdShow(l.addr, {
+    cols: l.cols, rows: l.rows, shift: l.shift, backlight: l.backlight, displayOn: l.displayOn,
+    cursor: l.cursor, blink: l.blink, cursorX: l.cursorX, cursorY: l.cursorY, version: 0,
+    ddram: l.ddram.map((r) => r.slice()),
+    cgram: l.cgram.map((r) => r.slice()),
+  });
+}
+
+function lcdClear(l: LcdState) {
+  l.ddram = Array.from({ length: Math.max(l.rows, 1) }, () => Array(40).fill(32));
+  l.cursorX = 0;
+  l.cursorY = 0;
+  l.shift = 0;
+}
+
+function lcdWrite(cx: CallCtx & { self: ObjValue }, text: string) {
+  const l = cx.self.state as LcdState;
+  for (const ch of text) {
+    let code = ch.codePointAt(0)!;
+    if (ch === '\r' || ch === '\n') {
+      cx.rt.warnOnce('lcd-newline', 'lcd.println() no salta de línea en un LCD: en la pantalla real aparecen dos símbolos raros. Usa lcd.setCursor(0, 1).');
+      continue;
+    }
+    if (code > 126) {
+      const plain = ch.normalize('NFD').replace(/[̀-ͯ]/g, '');
+      cx.rt.warnOnce('lcd-utf8', `El LCD no tiene tildes ni 'ñ' en su memoria de caracteres: en una pantalla real verías símbolos raros en lugar de '${ch}'.`);
+      code = plain.length === 1 && plain.charCodeAt(0) < 127 ? plain.charCodeAt(0) : 0xff;
+    }
+    if (l.cursorY < l.ddram.length) l.ddram[l.cursorY][l.cursorX] = code;
+    l.cursorX++;
+    if (l.cursorX >= 40) {
+      l.cursorX = 0;
+      l.cursorY = (l.cursorY + 1) % Math.max(l.rows, 1);
+    }
+  }
+  lcdPush(cx.rt, l);
+}
+
+function lcdPrint(cx: CallCtx & { self: ObjValue }, newline: boolean) {
+  const { args, types } = cx;
+  let text = args.length ? formatValue(args[0], types[0], args.length > 1 ? int(args, 1) : undefined) : '';
+  if (newline) text += '\r\n';
+  lcdWrite(cx, text);
+}
+
+const lcdSet = (patch: Partial<LcdState>): MethodDef['call'] => ({ rt, self }) => {
+  Object.assign(self.state, patch);
+  lcdPush(rt, self.state);
+};
+
+function lcdBegin({ rt, self, args }: CallCtx & { self: ObjValue }) {
+  const l = self.state as LcdState;
+  if (args.length >= 2) {
+    l.cols = int(args, 0);
+    l.rows = int(args, 1);
+  }
+  if (!rt.lib.i2c.begun) {
+    rt.lib.i2c.begun = true;
+    rt.hal.i2cBegin(rt.lib.i2c.sda, rt.lib.i2c.scl);
+  }
+  l.began = rt.hal.i2cProbe(l.addr);
+  if (!l.began) {
+    rt.warnOnce('lcd-' + l.addr, `No hay ningún LCD respondiendo en 0x${l.addr.toString(16).toUpperCase()} (revisa SDA/SCL/VCC/GND y la dirección: suele ser 0x27 o 0x3F).`);
+  }
+  lcdClear(l);
+  l.displayOn = true;
+  lcdPush(rt, l);
 }
 
 export const CLASSES: Record<string, ClassDef> = {
@@ -674,6 +826,136 @@ export const CLASSES: Record<string, ClassDef> = {
       startscrollright: m('display.startscrollright(a, b)', 'Scroll (sin efecto).', 'void', 2, 2, () => {}),
       startscrollleft: m('display.startscrollleft(a, b)', 'Scroll (sin efecto).', 'void', 2, 2, () => {}),
       stopscroll: m('display.stopscroll()', 'Detiene scroll.', 'void', 0, 0, () => {}),
+    },
+  },
+
+  Keypad: {
+    doc: 'Teclado matricial (librería Keypad de Mark Stanley y Alexander Brevig).',
+    include: 'Keypad.h',
+    ctorMin: 5,
+    ctorMax: 5,
+    create: ({ rt, args, line }) => {
+      const rows = int(args, 3);
+      const cols = int(args, 4);
+      if (rows < 1 || cols < 1 || rows > 10 || cols > 10) throw new RuntimeError(`Keypad: tamaño de teclado no válido (${rows}×${cols})`, line);
+      const mapV = args[0];
+      if (!isArr(mapV)) throw new RuntimeError('Keypad: el primer argumento debe ser makeKeymap(teclas)', line);
+      const map = mapV.items.map((x) => (isArr(x) ? 0 : Math.trunc(toNum(x))));
+      if (map.length < rows * cols) {
+        throw new RuntimeError(`Keypad: la tabla de teclas tiene ${map.length} teclas y el teclado ${rows}×${cols} = ${rows * cols}`, line);
+      }
+      const k: KeypadState = {
+        map,
+        rowPins: pinList(args[1], rows, 'rowPins', line),
+        colPins: pinList(args[2], cols, 'colPins', line),
+        rows, cols, cur: -1, state: 0, pressedAt: 0, lastScan: -1e9, debounce: 10, holdTime: 500,
+      };
+      // filas: entradas con pull-up · columnas: salidas en reposo a HIGH
+      for (const p of k.rowPins) rt.hal.pinMode(p, 0x05);
+      for (const p of k.colPins) {
+        rt.hal.pinMode(p, 0x03);
+        rt.hal.digitalWrite(p, 1);
+      }
+      return k;
+    },
+    methods: {
+      getKey: m('keypad.getKey()', "Devuelve la tecla recién pulsada ('0'..'9', 'A', '*', '#'...) o NO_KEY (0) si no hay ninguna nueva.", 'char', 0, 0,
+        ({ rt, self }) => {
+          const k = self.state as KeypadState;
+          return keypadScan(rt, k) ? k.map[k.cur] : 0;
+        }),
+      getState: m('keypad.getState()', 'Estado de la tecla: IDLE, PRESSED, HOLD o RELEASED.', 'int', 0, 0,
+        ({ rt, self }) => {
+          keypadScan(rt, self.state);
+          return self.state.state;
+        }),
+      isPressed: m("keypad.isPressed('5')", '¿Está pulsada ahora esa tecla?', 'bool', 1, 1,
+        ({ rt, self, args }) => {
+          const k = self.state as KeypadState;
+          keypadScan(rt, k);
+          return k.cur >= 0 && k.map[k.cur] === int(args, 0) ? 1 : 0;
+        }),
+      keyStateChanged: m('keypad.keyStateChanged()', '¿Ha cambiado el estado de la tecla en el último barrido?', 'bool', 0, 0,
+        ({ rt, self }) => {
+          const before = self.state.state;
+          keypadScan(rt, self.state);
+          return before !== self.state.state ? 1 : 0;
+        }),
+      setDebounceTime: m('keypad.setDebounceTime(ms)', 'Tiempo antirrebote entre barridos (10 ms por defecto).', 'void', 1, 1,
+        ({ self, args }) => {
+          self.state.debounce = Math.max(1, n(args, 0));
+        }),
+      setHoldTime: m('keypad.setHoldTime(ms)', 'Tiempo que hay que mantener una tecla para que pase a HOLD (500 ms por defecto).', 'void', 1, 1,
+        ({ self, args }) => {
+          self.state.holdTime = Math.max(0, n(args, 0));
+        }),
+    },
+  },
+
+  LiquidCrystal_I2C: {
+    doc: 'Pantalla LCD de caracteres 16×2 con adaptador I2C PCF8574 (librería LiquidCrystal_I2C).',
+    include: 'LiquidCrystal_I2C.h',
+    ctorMin: 1,
+    ctorMax: 3,
+    create: ({ args }) => {
+      const l: LcdState = {
+        addr: int(args, 0), cols: args.length > 1 ? int(args, 1) : 16, rows: args.length > 2 ? int(args, 2) : 2,
+        ddram: [], shift: 0, cgram: Array.from({ length: 8 }, () => Array(8).fill(0)),
+        backlight: false, displayOn: true, cursor: false, blink: false, cursorX: 0, cursorY: 0, version: 0, began: false,
+      };
+      lcdClear(l);
+      return l;
+    },
+    methods: {
+      init: m('lcd.init()', 'Inicia la pantalla (y el bus I2C).', 'void', 0, 0, (cx) => lcdBegin({ ...cx, args: [] })),
+      begin: m('lcd.begin([cols, filas])', 'Inicia la pantalla (y el bus I2C).', 'void', 0, 3, lcdBegin),
+      clear: m('lcd.clear()', 'Borra la pantalla y lleva el cursor a (0, 0).', 'void', 0, 0,
+        ({ rt, self }) => {
+          lcdClear(self.state);
+          lcdPush(rt, self.state);
+        }),
+      home: m('lcd.home()', 'Lleva el cursor a (0, 0).', 'void', 0, 0, lcdSet({ cursorX: 0, cursorY: 0, shift: 0 })),
+      setCursor: m('lcd.setCursor(columna, fila)', 'Coloca el cursor (columna 0..15, fila 0..1).', 'void', 2, 2,
+        ({ rt, self, args }) => {
+          const l = self.state as LcdState;
+          const col = int(args, 0);
+          const row = int(args, 1);
+          if (row < 0 || row >= l.rows) rt.warnOnce('lcd-row', `lcd.setCursor(${col}, ${row}): la pantalla solo tiene las filas 0..${l.rows - 1}.`);
+          l.cursorX = Math.max(0, Math.min(39, col));
+          l.cursorY = Math.max(0, Math.min(l.rows - 1, row));
+          lcdPush(rt, l);
+        }),
+      print: m('lcd.print(valor)', 'Escribe texto o números a partir del cursor.', 'int', 1, 2, (cx) => lcdPrint(cx, false)),
+      println: m('lcd.println(valor)', 'Como print (el LCD no entiende el salto de línea: usa setCursor).', 'int', 0, 2, (cx) => lcdPrint(cx, true)),
+      write: m('lcd.write(c)', 'Escribe un carácter (0..7 = caracteres creados con createChar).', 'int', 1, 1,
+        (cx) => lcdWrite(cx, typeof cx.args[0] === 'string' ? cx.args[0] : String.fromCharCode(int(cx.args, 0) & 0xff))),
+      createChar: m('lcd.createChar(n, bytes)', 'Define el carácter personalizado n (0..7) con 8 filas de 5 bits.', 'void', 2, 2,
+        ({ rt, self, args, line }) => {
+          const a = args[1];
+          if (!isArr(a)) throw new RuntimeError('lcd.createChar(n, datos): datos debe ser un array de 8 bytes', line);
+          self.state.cgram[int(args, 0) & 7] = Array.from({ length: 8 }, (_, i) => Math.trunc(toNum(a.items[i] ?? 0)) & 0x1f);
+          lcdPush(rt, self.state);
+        }),
+      backlight: m('lcd.backlight()', 'Enciende la retroiluminación.', 'void', 0, 0, lcdSet({ backlight: true })),
+      noBacklight: m('lcd.noBacklight()', 'Apaga la retroiluminación.', 'void', 0, 0, lcdSet({ backlight: false })),
+      setBacklight: m('lcd.setBacklight(on)', 'Enciende (1) o apaga (0) la retroiluminación.', 'void', 1, 1,
+        (cx) => lcdSet({ backlight: !!int(cx.args, 0) })(cx)),
+      display: m('lcd.display()', 'Muestra el texto.', 'void', 0, 0, lcdSet({ displayOn: true })),
+      noDisplay: m('lcd.noDisplay()', 'Oculta el texto (sin borrarlo).', 'void', 0, 0, lcdSet({ displayOn: false })),
+      cursor: m('lcd.cursor()', 'Muestra el cursor subrayado.', 'void', 0, 0, lcdSet({ cursor: true })),
+      noCursor: m('lcd.noCursor()', 'Oculta el cursor subrayado.', 'void', 0, 0, lcdSet({ cursor: false })),
+      blink: m('lcd.blink()', 'Cursor de bloque parpadeante.', 'void', 0, 0, lcdSet({ blink: true })),
+      noBlink: m('lcd.noBlink()', 'Quita el cursor parpadeante.', 'void', 0, 0, lcdSet({ blink: false })),
+      scrollDisplayLeft: m('lcd.scrollDisplayLeft()', 'Desplaza todo el texto una posición a la izquierda.', 'void', 0, 0,
+        ({ rt, self }) => {
+          self.state.shift = (self.state.shift + 1) % 40;
+          lcdPush(rt, self.state);
+        }),
+      scrollDisplayRight: m('lcd.scrollDisplayRight()', 'Desplaza todo el texto una posición a la derecha.', 'void', 0, 0,
+        ({ rt, self }) => {
+          self.state.shift = (self.state.shift + 39) % 40;
+          lcdPush(rt, self.state);
+        }),
     },
   },
 };

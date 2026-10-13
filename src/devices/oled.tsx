@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { checkSupply, FONT, MONO } from './common';
+import { checkI2cBus, checkSupply, FONT, MONO } from './common';
 import type { DeviceDef, OledFrame, TerminalDef } from './types';
 
 const terms: TerminalDef[] = [
@@ -93,20 +93,7 @@ export const oled: DeviceDef<OledState> = {
   evaluate(c) {
     const addr = Number(c.props.address ?? 0x3c);
     const { powered } = checkSupply(c, 'la OLED', 'VCC', 'GND', { min: 2.8, max: 5.5, others: ['SDA', 'SCL'] });
-    const { sda, scl, begun } = c.board.i2c;
-    const sdaPins = c.gpiosOnNet('SDA');
-    const sclPins = c.gpiosOnNet('SCL');
-    const wired = sdaPins.includes(sda) && sclPins.includes(scl);
-    if (sdaPins.includes(scl) && sclPins.includes(sda)) {
-      c.issue('error', 'SDA y SCL intercambiados en la OLED', `SDA debe ir a GPIO${sda} y SCL a GPIO${scl}.`, ['SDA', 'SCL']);
-    } else if (begun && c.board.running && !wired && (c.connected('SDA') || c.connected('SCL'))) {
-      c.issue(
-        'warning',
-        'La OLED no está en el bus I2C configurado',
-        `El programa usa SDA=GPIO${sda} y SCL=GPIO${scl}. Conecta allí los pines del módulo o cambia Wire.begin(sda, scl).`,
-        ['SDA', 'SCL'],
-      );
-    }
+    const wired = checkI2cBus(c, 'la OLED');
     const ready = powered && wired;
     const frame = ready ? c.board.oledFrame(addr) ?? null : null;
     return { powered, ready, addr, frame };

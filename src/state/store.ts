@@ -64,6 +64,8 @@ interface AppState {
   deleteSelection(): void;
   addWire(a: WireEnd, b: WireEnd, points: Point[]): void;
   updateWire(id: string, patch: Partial<Wire>, record?: boolean): void;
+  /** lleva un extremo de un cable a otro terminal */
+  reconnectWire(id: string, end: 'a' | 'b', to: WireEnd): void;
   undo(): void;
   redo(): void;
   clearCircuit(): void;
@@ -244,6 +246,20 @@ export const useApp = create<AppState>((set, get) => ({
     if (record) get().checkpoint();
     get().mutate((c) => ({ ...c, wires: c.wires.map((w) => (w.id === id ? { ...w, ...patch } : w)) }));
     if (patch.color) set({ wireColor: patch.color });
+  },
+
+  reconnectWire: (id, end, to) => {
+    const w = get().project.circuit.wires.find((x) => x.id === id);
+    if (!w) return;
+    const other = end === 'a' ? w.b : w.a;
+    if (sameEnd(w[end], to) || sameEnd(other, to)) return;
+    const dup = get().project.circuit.wires.some(
+      (x) => x.id !== id && ((sameEnd(x.a, other) && sameEnd(x.b, to)) || (sameEnd(x.a, to) && sameEnd(x.b, other))),
+    );
+    if (dup) return;
+    get().checkpoint();
+    get().mutate((c) => ({ ...c, wires: c.wires.map((x) => (x.id === id ? { ...x, [end]: to } : x)) }));
+    set({ selection: { comps: [], wires: [id] } });
   },
 
   undo: () =>

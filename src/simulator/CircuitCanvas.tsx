@@ -29,6 +29,8 @@ type Mode =
   | { kind: 'marquee'; start: Point; cur: Point }
   | { kind: 'wire'; from: WireEnd; points: Point[]; cursor: Point; downClient: Point | null; dragged: boolean }
   | { kind: 'handle'; wireId: string; index: number; moved: boolean }
+  /** arrastrando un extremo de un cable ya conectado para llevarlo a otro terminal */
+  | { kind: 'wireEnd'; wireId: string; end: 'a' | 'b'; cursor: Point; moved: boolean }
   | { kind: 'leg'; comp: string; term: string; holes: HoleIndex; moved: boolean };
 
 interface ViewState {
@@ -408,6 +410,20 @@ export const CircuitCanvas = forwardRef<CanvasHandle, { onZoom?(z: number): void
     setMode({ kind: 'handle', wireId: w.id, index, moved: false });
   };
 
+  const onWireEndDown = (e: React.PointerEvent, w: Wire, end: 'a' | 'b') => {
+    e.stopPropagation();
+    if (e.button !== 0) return;
+    svg.current!.setPointerCapture(e.pointerId);
+    setTooltip(null);
+    setMode({ kind: 'wireEnd', wireId: w.id, end, cursor: toWorld(e.clientX, e.clientY), moved: false });
+  };
+
+  /** extremo que se queda fijo mientras se arrastra el otro */
+  const fixedEnd = (m: Mode & { kind: 'wireEnd' }): WireEnd | undefined => {
+    const w = useApp.getState().project.circuit.wires.find((x) => x.id === m.wireId);
+    return w && (m.end === 'a' ? w.b : w.a);
+  };
+
   const onMove = (e: React.PointerEvent) => {
     const m = modeRef.current;
     if (m.kind === 'none') return;
@@ -473,6 +489,14 @@ export const CircuitCanvas = forwardRef<CanvasHandle, { onZoom?(z: number): void
         st.setLeg(inst.id, t.id, { x: local.x - t.x, y: local.y - t.y }, false);
         break;
       }
+      case 'wireEnd': {
+        const moved = m.moved || Math.hypot(p.x - m.cursor.x, p.y - m.cursor.y) * viewRef.current.zoom > 3;
+        if (!moved) return;
+        setMode({ ...m, cursor: p, moved });
+        const near = nearestTerminal(p, fixedEnd(m));
+        setHoverTerm(near ? near.key : null);
+        break;
+      }
       case 'handle': {
         const st = useApp.getState();
         const w = st.project.circuit.wires.find((x) => x.id === m.wireId);
@@ -529,6 +553,14 @@ export const CircuitCanvas = forwardRef<CanvasHandle, { onZoom?(z: number): void
         }
         break;
       }
+      case 'wireEnd': {
+        // soltado sobre un terminal: el cable pasa a ese pin; en vacío no cambia nada
+        const near = m.moved ? nearestTerminal(toWorld(e.clientX, e.clientY), fixedEnd(m)) : null;
+        if (near) useApp.getState().reconnectWire(m.wireId, m.end, near.end);
+        setHoverTerm(null);
+        setMode({ kind: 'none' });
+        break;
+      }
       case 'handle':
       case 'leg':
         setMode({ kind: 'none' });
@@ -574,6 +606,27 @@ export const CircuitCanvas = forwardRef<CanvasHandle, { onZoom?(z: number): void
       previewPath = pathFromPoints(routePoints(tp.p, tp.dir, target, tdir, wireMode.points));
     }
   }
+
+  /** ruta provisional del cable cuyo extremo se está arrastrando */
+  const wireEndMode = mode.kind === 'wireEnd' && mode.moved ? mode : null;
+  const draggedWirePath = (w: Wire): string | null => {
+    if (!wireEndMode || wireEndMode.wireId !== w.id) return null;
+    const fixed = wireEndMode.end === 'a' ? w.b : w.a;
+    const fc = compMap.get(fixed.comp);
+    const tf = fc ? terminalPos(fc, fixed.term) : null;
+    if (!tf) return null;
+    const near = nearestTerminal(wireEndMode.cursor, fixed);
+    let target = { x: snap(wireEndMode.cursor.x, 4), y: snap(wireEndMode.cursor.y, 4) };
+    let tdir: TerminalDef['dir'] | null = null;
+    if (near) {
+      const t2 = terminalPos(compMap.get(near.end.comp)!, near.end.term)!;
+      target = t2.p;
+      tdir = t2.dir;
+    }
+    // los codos se recorren desde el extremo fijo
+    const pts = wireEndMode.end === 'b' ? w.points : [...w.points].reverse();
+    return pathFromPoints(routePoints(tf.p, tf.dir, target, tdir, pts));
+  };
 
   const marquee = mode.kind === 'marquee' ? mode : null;
   const gridSize = 16 * view.zoom;
@@ -621,7 +674,7 @@ export const CircuitCanvas = forwardRef<CanvasHandle, { onZoom?(z: number): void
     return {
       hl: pick(highlighted.terms),
       issue: pick(issueTerms),
-      target: wireMode && hoverTerm?.startsWith(pre) ? hoverTerm : '',
+      target: (wireMode || wireEndMode) && hoverTerm?.startsWith(pre) ? hoverTerm : '',
       editable: selComps.has(id) && selection.comps.length === 1 && !selection.wires.length && !!getDevice(compMap.get(id)?.type ?? '')?.flexLegs,
       handlers: termHandlers,
     };
@@ -695,7 +748,8 @@ export const CircuitCanvas = forwardRef<CanvasHandle, { onZoom?(z: number): void
           {circuit.wires.map((w) => {
             const pts = wirePoints(w, compMap);
             if (!pts) return null;
-            const d = pathFromPoints(pts);
+            const d = draggedWirePath(w) ?? pathFromPoints(pts);
+            const dragging = wireEndMode?.wireId === w.id ? wireEndMode.end : null;
             const sel = selWires.has(w.id);
             const hl = highlighted.wires.has(w.id);
             return (
@@ -710,8 +764,8 @@ export const CircuitCanvas = forwardRef<CanvasHandle, { onZoom?(z: number): void
                 <path className="wire-hit" d={d} />
                 <path className="wire-under" d={d} />
                 <path className="wire-line" d={d} stroke={w.color} />
-                <circle cx={pts[0].x} cy={pts[0].y} r={2.6} fill={w.color} />
-                <circle cx={pts[pts.length - 1].x} cy={pts[pts.length - 1].y} r={2.6} fill={w.color} />
+                {dragging !== 'a' && <circle cx={pts[0].x} cy={pts[0].y} r={2.6} fill={w.color} />}
+                {dragging !== 'b' && <circle cx={pts[pts.length - 1].x} cy={pts[pts.length - 1].y} r={2.6} fill={w.color} />}
                 {sel &&
                   w.points.map((p, i) => (
                     <circle
@@ -734,6 +788,33 @@ export const CircuitCanvas = forwardRef<CanvasHandle, { onZoom?(z: number): void
           {circuit.components.filter((c) => !getDevice(c.type)?.under).map((c) => (
             <TermLayer key={c.id} comp={c} {...termLayerProps(c.id)} />
           ))}
+          {/* extremos de los cables seleccionados: se arrastran para cambiarlos de terminal */}
+          {circuit.wires.filter((w) => selWires.has(w.id)).map((w) => {
+            const pts = wirePoints(w, compMap);
+            if (!pts) return null;
+            const ends: ['a' | 'b', Point][] = [['a', pts[0]], ['b', pts[pts.length - 1]]];
+            return ends.map(([end, p]) =>
+              wireEndMode?.wireId === w.id && wireEndMode.end === end ? null : (
+                <circle
+                  key={w.id + end}
+                  className="wire-end"
+                  cx={p.x}
+                  cy={p.y}
+                  r={5.5}
+                  stroke={w.color}
+                  onPointerDown={(e) => onWireEndDown(e, w, end)}
+                >
+                  <title>Arrastra este extremo hasta otro pin para cambiar la conexión</title>
+                </circle>
+              ),
+            );
+          })}
+          {wireEndMode && (() => {
+            const w = circuit.wires.find((x) => x.id === wireEndMode.wireId);
+            const near = nearestTerminal(wireEndMode.cursor, fixedEnd(wireEndMode));
+            const p = near ? near.p : wireEndMode.cursor;
+            return w ? <circle className="wire-end dragging" cx={p.x} cy={p.y} r={5.5} stroke={w.color} /> : null;
+          })()}
           {wireMode && previewPath && <path className="wire-preview" d={previewPath} stroke={previewColor} />}
           {marquee && (
             <rect
@@ -749,6 +830,11 @@ export const CircuitCanvas = forwardRef<CanvasHandle, { onZoom?(z: number): void
       {wireMode && (
         <div className="canvas-banner">
           Cable desde <b>{wireMode.from.comp} · {terminalLabel(wireMode.from)}</b> — clic en un terminal para conectar · clic en vacío: codo · <kbd>Esc</kbd> cancela
+        </div>
+      )}
+      {wireEndMode && (
+        <div className="canvas-banner">
+          Suelta el extremo sobre otro pin o agujero para reconectar el cable · si lo sueltas en vacío no cambia nada
         </div>
       )}
       {tooltip && <PinTooltip info={tooltip} />}

@@ -68,6 +68,10 @@ function defaultValue(type: VarType): Value {
   return 0;
 }
 
+function arrBytes(a: ArrValue): number {
+  return a.items.reduce<number>((n, x) => n + (isArr(x) ? arrBytes(x) : sizeOfType(a.elem)), 0);
+}
+
 function sizeOfType(t: VarType): number {
   if (t.base === 'int') return (t.bits ?? 32) / 8;
   if (t.base === 'float') return t.text.includes('double') ? 8 : 4;
@@ -160,7 +164,9 @@ export class Interpreter {
         }
       }
       let v: Value;
-      if (d.arraySize !== null) {
+      if (d.arraySize !== null && d.arraySize2) {
+        v = yield* this.makeArray2(d, scope);
+      } else if (d.arraySize !== null) {
         let size: number;
         let initItems: Value[] = [];
         if (d.init?.kind === 'init') {
@@ -196,6 +202,32 @@ export class Interpreter {
       scope.vars.set(d.name, ref);
       if (d.type.isStatic && scope !== this.globals) this.statics.set(d, ref);
     }
+  }
+
+  /** array 2D: array de filas (cada fila es un array) */
+  private *makeArray2(d: Declarator, scope: Scope): Gen<Value> {
+    const rowsInit = d.init?.kind === 'init' ? d.init.items : [];
+    const cols = Math.trunc(toNum(yield* this.eval(d.arraySize2!, scope)));
+    const rows = d.arraySize === -1 ? rowsInit.length : Math.trunc(toNum(yield* this.eval(d.arraySize as Expr, scope)));
+    if (rows < 0 || cols < 0 || rows * cols > 100000) throw new RuntimeError(`Tamaño de array no válido: [${rows}][${cols}]`, d.line);
+    if (rowsInit.length > rows) throw new RuntimeError(`Demasiadas filas para el array '${d.name}' (tiene ${rows})`, d.line);
+    const out: Value[] = [];
+    for (let r = 0; r < rows; r++) {
+      const it = rowsInit[r];
+      let init: Value[] = [];
+      if (it?.kind === 'init') {
+        for (const x of it.items) init.push(yield* this.eval(x, scope));
+      } else if (it?.kind === 'str') {
+        init = [...it.value].map((ch) => ch.charCodeAt(0)).concat([0]);
+      } else if (it) {
+        throw new RuntimeError(`Cada fila de '${d.name}' se inicializa con una lista {..}`, d.line);
+      }
+      if (init.length > cols) throw new RuntimeError(`Demasiados valores en la fila ${r} de '${d.name}' (tiene ${cols} columnas)`, d.line);
+      const items: Value[] = [];
+      for (let i = 0; i < cols; i++) items.push(i < init.length ? coerce(init[i], d.type) : defaultValue(d.type));
+      out.push({ __arr: true, items, elem: d.type });
+    }
+    return { __arr: true, items: out, elem: d.type } as ArrValue;
   }
 
   private newObject(cls: string, args: Value[], types: ValType[]): ObjValue {
@@ -433,12 +465,12 @@ export class Interpreter {
         if (e.type) return sizeOfType(e.type);
         if (e.arg?.kind === 'ident') {
           const r = scope.lookup(e.arg.name);
-          if (r && isArr(r.v)) return r.v.items.length * sizeOfType(r.v.elem);
+          if (r && isArr(r.v)) return arrBytes(r.v);
           if (r?.type) return sizeOfType(r.type);
         }
         if (e.arg) {
           const v = yield* this.eval(e.arg, scope);
-          if (isArr(v)) return v.items.length * sizeOfType(v.elem);
+          if (isArr(v)) return arrBytes(v);
           return e.arg.t === 'float' ? 4 : e.arg.t === 'char' || e.arg.t === 'bool' ? 1 : 4;
         }
         return 4;

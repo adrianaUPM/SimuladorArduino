@@ -26,6 +26,8 @@ interface Sym {
   vt: ValType;
   isArray: boolean;
   isConst: boolean;
+  /** array 2D (char teclas[4][4]) */
+  is2d?: boolean;
 }
 
 const KNOWN_INCLUDES: Record<string, string | null> = {
@@ -36,6 +38,9 @@ const KNOWN_INCLUDES: Record<string, string | null> = {
   'Servo.h': 'En ESP32 se usa la librería ESP32Servo: #include <ESP32Servo.h>',
   'Adafruit_GFX.h': null,
   'Adafruit_SSD1306.h': null,
+  'Keypad.h': null,
+  'LiquidCrystal_I2C.h': null,
+  'LiquidCrystal.h': 'El simulador solo incluye la versión I2C del LCD: usa #include <LiquidCrystal_I2C.h>',
   'math.h': null,
   'stdio.h': null,
   'stdlib.h': null,
@@ -243,8 +248,13 @@ export function check(prog: Program, board: BoardInfo): Diagnostic[] {
           err('Solo se pueden indexar arrays y Strings', e);
           return 'any';
         }
+        if (e.object.kind === 'index' && e.object.object.kind === 'ident') {
+          const s = lookup(e.object.object.name);
+          if (s?.is2d && s.type) return valTypeOf(s.type);
+        }
         if (e.object.kind === 'ident') {
           const s = lookup(e.object.name);
+          if (s?.is2d) return 'array';
           if (s?.type) {
             const constIdx = constValue(e.index);
             const size = arraySizes.get(s);
@@ -412,7 +422,25 @@ export function check(prog: Program, board: BoardInfo): Diagnostic[] {
         const t = expr(d.arraySize);
         if (t === 'float') err('El tamaño de un array debe ser entero', d.arraySize);
       }
-      if (d.init) {
+      if (d.arraySize2) {
+        if (expr(d.arraySize2) === 'float') err('El tamaño de un array debe ser entero', d.arraySize2);
+      }
+      if (d.init && d.arraySize2) {
+        if (d.init.kind !== 'init') err('Un array 2D se inicializa con una lista de filas {{..}, {..}}', d.init);
+        else {
+          d.init.t = 'array';
+          for (const row of d.init.items) {
+            if (row.kind === 'init') {
+              row.t = 'array';
+              row.items.forEach((it) => {
+                if (expr(it) === 'string' && d.type.base !== 'string') err('Valor String en un array numérico', it);
+              });
+            } else if (row.kind === 'str' && d.type.bits === 8) {
+              row.t = 'string';
+            } else err('Cada fila del array 2D se escribe entre llaves {..}', row);
+          }
+        }
+      } else if (d.init) {
         if (d.init.kind === 'init') {
           if (d.arraySize === null) err(`'${d.name}' no es un array: no puede inicializarse con {..}`, d.init);
           d.init.items.forEach((it) => {
@@ -430,7 +458,7 @@ export function check(prog: Program, board: BoardInfo): Diagnostic[] {
       } else if (d.type.isConst) {
         err(`La constante '${d.name}' debe inicializarse`, d);
       }
-      const sym: Sym = { type: d.type, vt: valTypeOf(d.type), isArray: d.arraySize !== null, isConst: !!d.type.isConst };
+      const sym: Sym = { type: d.type, vt: valTypeOf(d.type), isArray: d.arraySize !== null, isConst: !!d.type.isConst, is2d: !!d.arraySize2 };
       declare(d.name, sym, d);
       if (sym.isArray) {
         let size: number | undefined;

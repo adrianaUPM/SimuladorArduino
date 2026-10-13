@@ -2,6 +2,7 @@
 // propiedades, representación visual y comportamiento de simulación.
 
 import type { ComponentType } from 'react';
+import type { LcdFrame } from '../engine/values';
 import type { ComponentInstance, Issue, WireEnd } from '../simulator/types';
 
 /**
@@ -64,6 +65,9 @@ export interface BoardView {
   running: boolean;
   pin(gpio: number): PinState;
   oledFrame(addr: number): OledFrame | undefined;
+  lcdFrame(addr: number): LcdFrame | undefined;
+  /** ms desde el último pulso HIGH→LOW de un GPIO (Infinity si nunca) */
+  sincePulse(gpio: number): number;
   i2c: { sda: number; scl: number; begun: boolean };
 }
 

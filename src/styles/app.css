@@ -801,6 +801,19 @@ textarea {
   stroke-width: 1.5;
   cursor: move;
 }
+.wire-end {
+  fill: var(--panel);
+  stroke-width: 2.5;
+  cursor: grab;
+}
+.wire-end:hover {
+  fill: var(--accent-soft);
+}
+.wire-end.dragging {
+  pointer-events: none;
+  fill: var(--accent-soft);
+  stroke-dasharray: 3 2;
+}
 .wire-preview {
   fill: none;
   stroke-width: 3;

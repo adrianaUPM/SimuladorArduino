@@ -453,6 +453,196 @@ const buzzerEx = withButton(kit(), 'yellow')
   .wire('bb1.f16', 'bb1.e16', BLACK)
   .wire('bb1.a16', 'bb1.tn16', BLACK);
 
+// ---------------------------------------------------------------- 9. caja fuerte
+
+const safeCode = `// Caja fuerte con teclado matricial 4x4 y pantalla LCD 16x2 I2C
+//
+// Teclado (8 pines, cables directos a la cabecera J3 de la placa):
+//   R1..R4 (filas)    -> GPIO1, GPIO2, GPIO42, GPIO41
+//   C1..C4 (columnas) -> GPIO40, GPIO39, GPIO47, GPIO21
+// LCD I2C (a través de la protoboard):
+//   VCC -> raíl + (3V3) · GND -> raíl − · SDA -> GPIO10 · SCL -> GPIO9
+//
+// Uso:  0-9 escribe el PIN · # comprueba · * borra
+//       Con la caja abierta, * (o A) la vuelve a cerrar.
+// Tras 5 intentos fallidos el teclado se bloquea 1 minuto.
+
+#include <Wire.h>
+#include <Keypad.h>
+#include <LiquidCrystal_I2C.h>
+
+const byte FILAS = 4;
+const byte COLUMNAS = 4;
+char teclas[FILAS][COLUMNAS] = {
+  {'1', '2', '3', 'A'},
+  {'4', '5', '6', 'B'},
+  {'7', '8', '9', 'C'},
+  {'*', '0', '#', 'D'}
+};
+byte pinesFilas[FILAS] = {1, 2, 42, 41};
+byte pinesColumnas[COLUMNAS] = {40, 39, 47, 21};
+Keypad teclado = Keypad(makeKeymap(teclas), pinesFilas, pinesColumnas, FILAS, COLUMNAS);
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);   // dirección, columnas, filas
+
+const String CLAVE = "1234";          // PIN correcto
+const int MAX_INTENTOS = 5;            // fallos permitidos antes del bloqueo
+const unsigned long ESPERA_MS = 60000; // 1 minuto
+const int LONGITUD_MAX = 8;            // dígitos máximos del PIN
+const String AVISO = "para volverlo a intentar";
+
+String entrada = "";
+int fallos = 0;
+bool abierta = false;
+bool bloqueada = false;
+unsigned long inicioBloqueo = 0;
+
+void pantallaPin() {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Introduce PIN:");
+  lcd.setCursor(0, 1);
+  lcd.print(entrada);   // los números que se van pulsando
+}
+
+void abrir() {
+  abierta = true;
+  fallos = 0;
+  lcd.clear();
+  lcd.setCursor(4, 0);
+  lcd.print("ABIERTO");
+  lcd.setCursor(0, 1);
+  lcd.print("* para cerrar");
+  Serial.println("PIN correcto: caja ABIERTA");
+}
+
+void cerrar() {
+  abierta = false;
+  entrada = "";
+  Serial.println("Caja cerrada");
+  pantallaPin();
+}
+
+void pinIncorrecto() {
+  fallos++;
+  Serial.print("PIN incorrecto. Fallos: ");
+  Serial.println(fallos);
+  lcd.clear();
+  lcd.setCursor(3, 0);
+  lcd.print("BLOQUEADO");
+  lcd.setCursor(0, 1);
+  lcd.print("Fallos: ");
+  lcd.print(fallos);
+  lcd.print("/");
+  lcd.print(MAX_INTENTOS);
+  delay(2000);
+  if (fallos >= MAX_INTENTOS) {
+    bloqueada = true;
+    inicioBloqueo = millis();
+    Serial.println("Demasiados fallos: espere 1 min");
+    lcd.clear();
+  } else {
+    pantallaPin();
+  }
+}
+
+void comprobar() {
+  if (entrada.length() == 0) return;
+  if (entrada == CLAVE) abrir();
+  else pinIncorrecto();
+  entrada = "";
+}
+
+// Cuenta atrás del bloqueo con el aviso desplazándose en la segunda fila
+void mostrarBloqueo() {
+  unsigned long pasado = millis() - inicioBloqueo;
+  if (pasado >= ESPERA_MS) {
+    bloqueada = false;
+    fallos = 0;
+    Serial.println("Fin del bloqueo");
+    pantallaPin();
+    return;
+  }
+  // la cuenta atrás solo se redibuja cuando cambia el segundo
+  static int ultimoSegundo = -1;
+  int segundos = (ESPERA_MS - pasado + 999) / 1000;
+  if (segundos != ultimoSegundo) {
+    ultimoSegundo = segundos;
+    lcd.setCursor(0, 0);
+    lcd.print("Espere 1 min ");
+    if (segundos < 10) lcd.print(" ");
+    lcd.print(segundos);
+    lcd.print("s");
+  }
+
+  static unsigned long ultimoPaso = 0;
+  static int pos = 0;
+  if (millis() - ultimoPaso >= 300) {
+    ultimoPaso = millis();
+    String cinta = AVISO + "    " + AVISO;
+    lcd.setCursor(0, 1);
+    lcd.print(cinta.substring(pos, pos + 16));
+    pos = (pos + 1) % (AVISO.length() + 4);
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(10, 9);   // SDA, SCL
+  lcd.init();
+  lcd.backlight();
+  pantallaPin();
+  Serial.println("Caja fuerte lista. PIN de prueba: 1234");
+}
+
+void loop() {
+  if (bloqueada) {
+    mostrarBloqueo();   // durante el bloqueo se ignora el teclado
+    return;
+  }
+  char tecla = teclado.getKey();
+  if (!tecla) return;   // NO_KEY: no se ha pulsado nada
+
+  if (abierta) {
+    if (tecla == '*' || tecla == 'A') cerrar();
+    return;
+  }
+  if (tecla == '#') {
+    comprobar();
+  } else if (tecla == '*') {
+    entrada = "";
+    pantallaPin();
+  } else if (tecla >= '0' && tecla <= '9' && entrada.length() < LONGITUD_MAX) {
+    entrada += tecla;
+    lcd.setCursor(0, 1);
+    lcd.print(entrada);
+  }
+}
+`;
+
+/**
+ * Teclado a la derecha de la placa: cada fila/columna con un cable en L desde
+ * J3. LCD encima de la protoboard: alimentación desde los raíles de la derecha
+ * (por arriba) y SDA/SCL desde GPIO10/GPIO9 a través de las filas 22 y 21.
+ */
+const safe = kit()
+  .add('kp1', 'keypad', 600, -110)
+  .add('lcd1', 'lcd', -40, -150)
+  .wire('esp.GPIO1', 'kp1.R1', ORANGE)
+  .wire('esp.GPIO2', 'kp1.R2', ORANGE)
+  .wire('esp.GPIO42', 'kp1.R3', ORANGE)
+  .wire('esp.GPIO41', 'kp1.R4', ORANGE)
+  .wire('esp.GPIO40', 'kp1.C1', BLUE)
+  .wire('esp.GPIO39', 'kp1.C2', BLUE)
+  .wire('esp.GPIO47', 'kp1.C3', BLUE)
+  .wire('esp.GPIO21', 'kp1.C4', BLUE)
+  .wire('esp.GPIO10', 'bb1.a22', PURPLE)
+  .wire('esp.GPIO9', 'bb1.a21', YELLOW)
+  .wire('bb1.c22', 'lcd1.SDA', PURPLE, [{ x: 216, y: -24 }, { x: -72, y: -24 }, { x: -72, y: -90 }])
+  .wire('bb1.b21', 'lcd1.SCL', YELLOW, [{ x: 232, y: -34 }, { x: -60, y: -34 }, { x: -60, y: -74 }])
+  .wire('bb1.tn2', 'lcd1.GND', BLACK, [{ x: 280, y: -160 }, { x: -60, y: -160 }, { x: -60, y: -122 }])
+  .wire('bb1.tp2', 'lcd1.VCC', RED, [{ x: 296, y: -172 }, { x: -72, y: -172 }, { x: -72, y: -106 }]);
+
 export interface Example {
   id: string;
   title: string;
@@ -468,6 +658,7 @@ export const EXAMPLES: Example[] = [
   { id: 'oled', title: 'Pantalla OLED I2C', description: 'Adafruit_SSD1306 por I2C, enchufada en la protoboard.', project: { name: 'Pantalla OLED', code: oledCode, circuit: oledEx.c } },
   { id: 'rgb', title: 'LED RGB', description: 'Mezcla de colores con tres canales PWM.', project: { name: 'LED RGB', code: rgbCode, circuit: rgb.c } },
   { id: 'buzzer', title: 'Buzzer y pulsador', description: 'tone() para tocar una escala musical.', project: { name: 'Buzzer', code: buzzerCode, circuit: buzzerEx.c } },
+  { id: 'safe', title: 'Caja fuerte con teclado', description: 'Teclado 4×4 + LCD 16×2 I2C: PIN, ABIERTO/BLOQUEADO y bloqueo de 1 min tras 5 fallos.', project: { name: 'Caja fuerte', code: safeCode, circuit: safe.c } },
   { id: 'mvp', title: 'Proyecto completo', description: 'LED, pulsador, potenciómetro, servo y OLED a la vez.', project: { name: 'Proyecto completo', code: mvpCode, circuit: mvp.c } },
 ];
 

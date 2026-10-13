@@ -12,6 +12,9 @@ import { evaluate, solve, type Evaluation, type Solution } from './solver';
 import type { Circuit } from './types';
 import { termKey } from './types';
 
+/** componentes que responden en el bus I2C (su estado expone ready y addr) */
+const I2C_DEVICES = new Set(['oled', 'lcd']);
+
 class SimController {
   readonly clock = new SimClock();
   readonly board: Esp32Board;
@@ -31,11 +34,13 @@ class SimController {
       clock: this.clock,
       pinVoltage: (gpio) => this.pinVoltage(gpio),
       i2cProbe: (addr) => this.i2cProbe(addr),
+      keypadScan: (rows, cols) => this.keypadScan(rows, cols),
+      pulseIn: (pin, level) => this.pulseIn(pin, level),
       serialOut: (text) => this.pending.push({ kind: 'out', text }),
       warn: (msg, line) => this.pending.push({ kind: 'warn', text: msg, line }),
       queueIsr: (fn) => this.runner?.queueIsr(fn),
       outputsChanged: () => this.invalidate(),
-      oledChanged: () => {
+      displayChanged: () => {
         this.dirtyEval = true;
       },
     };
@@ -104,7 +109,61 @@ class SimController {
 
   private i2cProbe(addr: number): boolean {
     const ev = this.ensureEvaluated();
-    return this.circuit.components.some((c) => c.type === 'oled' && ev.states[c.id]?.ready && ev.states[c.id]?.addr === addr);
+    return this.circuit.components.some((c) => I2C_DEVICES.has(c.type) && ev.states[c.id]?.ready && ev.states[c.id]?.addr === addr);
+  }
+
+  private gpioNet(sol: Solution, gpio: number): number | undefined {
+    const esp = this.espId();
+    return esp ? sol.netlist.netOf.get(termKey(esp, `GPIO${gpio}`)) : undefined;
+  }
+
+  /**
+   * Teclado matricial: una tecla pulsada une el net de su fila con el de su
+   * columna. Se detecta si esos nets son los de un pin de rowPins y uno de
+   * colPins (en cualquier orden, como en el hardware real).
+   */
+  private keypadScan(rows: number[], cols: number[]): [number, number][] {
+    const sol = this.ensureSolved();
+    const rowNets = rows.map((g) => this.gpioNet(sol, g));
+    const colNets = cols.map((g) => this.gpioNet(sol, g));
+    const hits: [number, number][] = [];
+    for (const c of this.circuit.components) {
+      if (c.type !== 'keypad') continue;
+      const key = this.inputs[c.id]?.key as [number, number] | null | undefined;
+      if (!key) continue;
+      const a = sol.netlist.netOf.get(termKey(c.id, `R${key[0] + 1}`));
+      const b = sol.netlist.netOf.get(termKey(c.id, `C${key[1] + 1}`));
+      if (a === undefined || b === undefined || a === 0 || b === 0) continue;
+      rowNets.forEach((rn, i) =>
+        colNets.forEach((cn, j) => {
+          if ((rn === a && cn === b) || (rn === b && cn === a)) hits.push([i, j]);
+        }),
+      );
+    }
+    return hits;
+  }
+
+  /** ECHO de un HC-SR04: duración del pulso en µs, 0 si no hay sensor y -1 si falta el disparo */
+  private pulseIn(pin: number, level: number): number {
+    const ev = this.ensureEvaluated();
+    const sol = this.solution!;
+    const net = this.gpioNet(sol, pin);
+    if (net === undefined) return 0;
+    for (const c of this.circuit.components) {
+      if (c.type !== 'ultrasonic') continue;
+      const st = ev.states[c.id];
+      if (!st?.powered || sol.netlist.netOf.get(termKey(c.id, 'ECHO')) !== net) continue;
+      const trig = sol.netlist.netOf.get(termKey(c.id, 'TRIG'));
+      const esp = this.espId()!;
+      const trigGpios = (sol.netlist.members[trig ?? -1] ?? [])
+        .filter((m) => m.comp === esp && m.term.startsWith('GPIO'))
+        .map((m) => Number(m.term.slice(4)));
+      if (!trigGpios.some((g) => this.board.sincePulse(g) < 60)) return -1;
+      if (!level) return 0;
+      // ida y vuelta a 343 m/s: 58.3 µs por cm (con algo de ruido)
+      return st.distance * 58.3 * (1 + (Math.random() - 0.5) * 0.01);
+    }
+    return 0;
   }
 
   private tick() {

@@ -48,6 +48,28 @@ export function checkSupply(
   return { vcc, powered: vcc >= min && vcc <= max + 0.5 };
 }
 
+/**
+ * Comprueba que SDA/SCL del módulo están en los pines del bus I2C que usa el
+ * programa. Devuelve true si el módulo está en el bus.
+ */
+export function checkI2cBus(c: EvalCtx, name: string): boolean {
+  const { sda, scl, begun } = c.board.i2c;
+  const sdaPins = c.gpiosOnNet('SDA');
+  const sclPins = c.gpiosOnNet('SCL');
+  const wired = sdaPins.includes(sda) && sclPins.includes(scl);
+  if (sdaPins.includes(scl) && sclPins.includes(sda)) {
+    c.issue('error', `SDA y SCL intercambiados en ${name}`, `SDA debe ir a GPIO${sda} y SCL a GPIO${scl}.`, ['SDA', 'SCL']);
+  } else if (begun && c.board.running && !wired && (c.connected('SDA') || c.connected('SCL'))) {
+    c.issue(
+      'warning',
+      `${name[0].toUpperCase()}${name.slice(1)} no está en el bus I2C configurado`,
+      `El programa usa SDA=GPIO${sda} y SCL=GPIO${scl}. Conecta allí los pines del módulo o cambia Wire.begin(sda, scl).`,
+      ['SDA', 'SCL'],
+    );
+  }
+  return wired;
+}
+
 export const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 
 export function formatOhms(r: number): string {
