@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ESP32_BOARD_INFO } from '../devices/esp32s3/pins';
 import { Interpreter, TICK } from './interpreter';
+import { EXAMPLES } from '../state/examples';
 import { compile } from './runner';
 import { Sleep, type Hal } from './values';
 
@@ -189,5 +190,37 @@ describe('static locales', () => {
   it('conservan su valor entre llamadas', () => {
     const r = run(`int total; void f() { static int n = 0; n++; total = n; } void setup() { f(); f(); f(); } void loop() { delay(1); }`, 1);
     expect(r.interp.getGlobal('total')).toBe(3);
+  });
+});
+
+describe('ejemplo semáforo', () => {
+  const code = EXAMPLES.find((e) => e.id === 'traffic')!.project.code;
+
+  /** ejecuta unas vueltas de loop() con el eco fijado a `cm` y devuelve el último estado de los LEDs */
+  function leds(cm: number) {
+    const res = compile(code, ESP32_BOARD_INFO);
+    expect(res.diagnostics.filter((d) => d.severity === 'error')).toEqual([]);
+    const m = mockHal();
+    m.hal.pulseIn = () => cm * 58;
+    const g = new Interpreter(res.program!, m.hal).main();
+    for (let i = 0, sleeps = 0; i < 100000 && sleeps < 20; i++) {
+      const r = g.next();
+      if (r.done) break;
+      if (r.value instanceof Sleep) {
+        sleeps++;
+        m.advance(r.value.ms);
+      }
+    }
+    const last = (pin: number) => [...m.log].reverse().find((l) => l.startsWith(`write ${pin} `))?.split(' ')[2];
+    return { rojo: last(4), ambar: last(17), verde: last(10), out: m.out() };
+  }
+
+  it('verde a más de 90 cm, ámbar entre 60 y 90 y rojo a menos de 60', () => {
+    expect(leds(150)).toMatchObject({ rojo: '0', ambar: '0', verde: '1' });
+    expect(leds(90)).toMatchObject({ rojo: '0', ambar: '1', verde: '0' });
+    expect(leds(75)).toMatchObject({ rojo: '0', ambar: '1', verde: '0' });
+    expect(leds(60)).toMatchObject({ rojo: '0', ambar: '1', verde: '0' });
+    expect(leds(30)).toMatchObject({ rojo: '1', ambar: '0', verde: '0' });
+    expect(leds(30).out).toMatch(/Distancia: 30\.0 cm -> ROJO/);
   });
 });

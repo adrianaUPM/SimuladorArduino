@@ -68,6 +68,36 @@ describe('montaje de la caja fuerte', () => {
   });
 });
 
+describe('montaje del semáforo', () => {
+  const circuit = EXAMPLES.find((e) => e.id === 'traffic')!.project.circuit;
+  const net = buildNetlist(circuit);
+  // corta solo en el primer punto: hay terminales como '3V3.L1'
+  const key = (s: string) => termKey(s.slice(0, s.indexOf('.')), s.slice(s.indexOf('.') + 1));
+  const same = (a: string, b: string) => net.netOf.get(key(a)) === net.netOf.get(key(b));
+  const leds = { led1: 4, led2: 17, led3: 10 };
+
+  it('el HC-SR04 va a GPIO1/GPIO2 y está alimentado a 3V3', () => {
+    expect(same('us1.TRIG', 'esp.GPIO1')).toBe(true);
+    expect(same('us1.ECHO', 'esp.GPIO2')).toBe(true);
+    expect(same('us1.VCC', 'esp.3V3.L1')).toBe(true);
+    expect(same('us1.GND', 'esp.GND.L21')).toBe(true);
+  });
+
+  it('cada LED enciende solo con su GPIO en alto y sin avisos', () => {
+    for (const [id, gpio] of Object.entries(leds)) {
+      const pins: Record<number, Partial<PinState>> = { 1: { mode: 'output' }, 2: { mode: 'input' } };
+      for (const g of Object.values(leds)) pins[g] = { mode: 'output', level: g === gpio ? 1 : 0 };
+      const { ev } = run(circuit, board(pins));
+      expect(ev.issues.filter((i) => i.severity !== 'info')).toEqual([]);
+      expect(ev.states.us1).toMatchObject({ powered: true, distance: 120 });
+      for (const other of Object.keys(leds)) {
+        if (other === id) expect(ev.states[other].brightness).toBeGreaterThan(0.5);
+        else expect(ev.states[other].brightness).toBe(0);
+      }
+    }
+  });
+});
+
 describe('nuevos componentes', () => {
   it('el display de 7 segmentos (cátodo común) enciende solo los segmentos en alto', () => {
     const circuit: Circuit = {

@@ -643,6 +643,100 @@ const safe = kit()
   .wire('bb1.tn2', 'lcd1.GND', BLACK, [{ x: 280, y: -160 }, { x: -60, y: -160 }, { x: -60, y: -122 }])
   .wire('bb1.tp2', 'lcd1.VCC', RED, [{ x: 296, y: -172 }, { x: -72, y: -172 }, { x: -72, y: -106 }]);
 
+// ---------------------------------------------------------------- 10. semáforo
+
+const trafficCode = `// Semáforo de distancia con un HC-SR04 y tres LEDs
+//
+// HC-SR04 (a la derecha de la placa, alimentado a 3V3):
+//   VCC -> raíl + (3V3) · TRIG -> GPIO1 · ECHO -> GPIO2 · GND -> GND
+// LEDs en la protoboard, cada uno con su resistencia de 220 Ω:
+//   rojo -> GPIO4 · ámbar -> GPIO17 · verde -> GPIO10
+//
+// Más de 90 cm: verde · entre 60 y 90 cm: ámbar · menos de 60 cm: rojo
+// Mueve el deslizador del sensor para cambiar la distancia.
+
+const int TRIG = 1;
+const int ECHO = 2;
+const int LED_ROJO = 4;
+const int LED_AMBAR = 17;
+const int LED_VERDE = 10;
+
+const float DIST_VERDE = 90.0;   // por encima: verde
+const float DIST_ROJO = 60.0;    // por debajo: rojo
+
+// enciende solo uno de los tres LEDs
+void semaforo(bool rojo, bool ambar, bool verde) {
+  digitalWrite(LED_ROJO, rojo ? HIGH : LOW);
+  digitalWrite(LED_AMBAR, ambar ? HIGH : LOW);
+  digitalWrite(LED_VERDE, verde ? HIGH : LOW);
+}
+
+// devuelve la distancia en cm, o -1 si no llega el eco
+float medirDistancia() {
+  digitalWrite(TRIG, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG, HIGH);      // pulso de 10 µs para disparar
+  delayMicroseconds(10);
+  digitalWrite(TRIG, LOW);
+  long duracion = pulseIn(ECHO, HIGH, 30000);   // µs (máx. ~5 m)
+  if (duracion == 0) return -1;
+  return duracion / 58.0;        // ida y vuelta a 343 m/s
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(TRIG, OUTPUT);
+  pinMode(ECHO, INPUT);
+  pinMode(LED_ROJO, OUTPUT);
+  pinMode(LED_AMBAR, OUTPUT);
+  pinMode(LED_VERDE, OUTPUT);
+  semaforo(false, false, false);
+}
+
+void loop() {
+  float distancia = medirDistancia();
+
+  if (distancia < 0) {
+    Serial.println("Sin eco");
+    semaforo(false, false, false);
+  } else {
+    Serial.print("Distancia: ");
+    Serial.print(distancia, 1);
+    Serial.print(" cm -> ");
+    if (distancia > DIST_VERDE) {
+      Serial.println("VERDE");
+      semaforo(false, false, true);
+    } else if (distancia >= DIST_ROJO) {
+      Serial.println("AMBAR");
+      semaforo(false, true, false);
+    } else {
+      Serial.println("ROJO");
+      semaforo(true, false, false);
+    }
+  }
+  delay(200);
+}
+`;
+
+/**
+ * Tres veces el montaje del LED (GPIO → resistencia → LED → raíl −), de arriba
+ * abajo rojo, ámbar y verde. El HC-SR04 va a la derecha de la placa: TRIG y
+ * ECHO a GPIO1/GPIO2 de J3, GND a J3 y VCC al raíl + pasando por encima.
+ */
+const ledBlock = (b: Builder, n: string, gpio: number, row: number, color: string, wire: string) =>
+  b
+    .plug(`r${n}`, 'resistor', '1', `c${row}`, { resistance: 220 }, 90)
+    .plug(`led${n}`, 'led', 'A', `a${row + 4}`, { color }, 90)
+    .wire(`esp.GPIO${gpio}`, `bb1.a${row}`, wire)
+    .wire(`bb1.e${row + 5}`, `bb1.bn${row + 5}`, BLACK);
+
+const traffic = ledBlock(ledBlock(ledBlock(kit(), '1', 4, 10, 'red', RED), '2', 17, 16, 'orange', ORANGE), '3', 10, 22, 'green', GREEN)
+  .add('us1', 'ultrasonic', 560, -40, { distance: 120 })
+  .wire('esp.GPIO1', 'us1.TRIG', BLUE)
+  .wire('esp.GPIO2', 'us1.ECHO', PURPLE)
+  .wire('esp.GND.R20', 'us1.GND', BLACK)
+  .wire('us1.VCC', 'bb1.tp2', RED, [{ x: 548, y: 52 }, { x: 548, y: 12 }, { x: 296, y: 12 }]);
+
 export interface Example {
   id: string;
   title: string;
@@ -659,6 +753,7 @@ export const EXAMPLES: Example[] = [
   { id: 'rgb', title: 'LED RGB', description: 'Mezcla de colores con tres canales PWM.', project: { name: 'LED RGB', code: rgbCode, circuit: rgb.c } },
   { id: 'buzzer', title: 'Buzzer y pulsador', description: 'tone() para tocar una escala musical.', project: { name: 'Buzzer', code: buzzerCode, circuit: buzzerEx.c } },
   { id: 'safe', title: 'Caja fuerte con teclado', description: 'Teclado 4×4 + LCD 16×2 I2C: PIN, ABIERTO/BLOQUEADO y bloqueo de 1 min tras 5 fallos.', project: { name: 'Caja fuerte', code: safeCode, circuit: safe.c } },
+  { id: 'traffic', title: 'SEMÁFORO', description: 'HC-SR04 + 3 LEDs: verde a más de 90 cm, ámbar entre 60 y 90 cm y rojo a menos de 60 cm.', project: { name: 'Semáforo', code: trafficCode, circuit: traffic.c } },
   { id: 'mvp', title: 'Proyecto completo', description: 'LED, pulsador, potenciómetro, servo y OLED a la vez.', project: { name: 'Proyecto completo', code: mvpCode, circuit: mvp.c } },
 ];
 
